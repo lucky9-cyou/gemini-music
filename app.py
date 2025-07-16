@@ -1,8 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
-from google.generativeai import types # <-- 导入 types 模块
+# from google.generativeai import types # <-- 不再需要导入 types 模块
 import os
-# import io # 不再需要导入 io 模块，因为不再使用 BytesIO 封装 genai.upload_file
+# import io # 不再需要导入 io 模块
 import time # For simulated loading
 
 # --- Streamlit 页面配置 ---
@@ -116,13 +116,10 @@ if analyze_button:
                 st.markdown("---")
 
 
-            # 2. 将音频内容转换为内嵌 Part 对象
+            # 2. 获取音频字节流
             with status_message_area.status("正在准备音频内容...", expanded=True) as status_box:
                 audio_bytes = uploaded_file.getvalue() # 获取原始字节流
-                audio_part = types.Part.from_bytes( # <-- 核心修改点：使用 types.Part.from_bytes
-                    data=audio_bytes,
-                    mime_type=uploaded_file.type,
-                )
+                # 关键修改：不再需要手动创建 types.Part 对象，直接使用 (bytes, mime_type) 元组
                 status_box.update(label="音频内容已准备就绪！", state="complete", expanded=False)
 
 
@@ -130,7 +127,8 @@ if analyze_button:
             with status_message_area.status(f"正在使用 `{selected_model_name}` 模型分析内容...", expanded=True) as status_box:
                 model = genai.GenerativeModel(selected_model_id)
                 response = model.generate_content(
-                    contents=[user_prompt, audio_part] # <-- 直接传入 Part 对象
+                    # 关键修改：直接传入 (bytes, mime_type) 元组
+                    contents=[user_prompt, (audio_bytes, uploaded_file.type)] 
                 )
                 status_box.update(label="模型响应已获取！", state="complete", expanded=False)
 
@@ -155,7 +153,7 @@ if analyze_button:
             analysis_result_expander.empty()
         finally:
             # 内嵌音频方式不需要清理 Google 服务上的临时文件，所以此 finally 块现在是空的
-            pass # 或者直接删除整个 finally 块
+            pass
 
 
 # --- 页脚 (可选) ---
