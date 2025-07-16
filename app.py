@@ -1,6 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
-from google.generativeai import protos # <-- 导入 protos 模块，用于构建内嵌二进制数据
+from google.generativeai import protos # 导入 protos 模块，用于构建内嵌二进制数据
 import os
 import time # 用于模拟一些延迟或进度条，实际API调用不直接使用
 
@@ -27,7 +27,7 @@ if not api_key:
     st.info("""
     **配置方式：**
     - **部署到 Zeabur**: 在 Zeabur 控制台的环境变量中添加 `GOOGLE_API_KEY = "your_api_key_here"`
-    - **本地运行**: 在终端中设置环境变量 `export GOOGLE_API_KEY="your_api_key_here"`
+    - **本地运行**: 在终端中设置环境变量 `export GOLE_API_KEY="your_api_key_here"`
     """)
     st.stop() # 如果没有 API Key，停止应用运行
 
@@ -111,6 +111,21 @@ if analyze_button:
         analysis_result_expander.expanded = True
 
         status_message_area.info("⏳ 正在准备分析，请稍候...", icon="🔄")
+
+        # --- 调试信息开始 ---
+        # 这是一个临时的调试区域，用于在UI上显示文件上传的元数据
+        # 帮助诊断为什么3MB文件会失败
+        with st.sidebar.expander("🐛 调试信息 (仅供排查问题)", expanded=False):
+            st.write(f"上传文件名: `{uploaded_file.name}`")
+            st.write(f"文件大小: `{uploaded_file.size} bytes`")
+            st.write(f"MIME 类型: `{uploaded_file.type}`")
+            # 警告：不要打印uploaded_file.getvalue()，除非你清楚它的影响（大文件会阻塞UI）
+            if uploaded_file.size > 0:
+                st.text(f"文件内容前100字节（十六进制）：{uploaded_file.getvalue()[:100].hex()}")
+            else:
+                st.text("文件内容为空或无法读取前100字节")
+            st.markdown("---")
+        # --- 调试信息结束 ---
 
         try:
             # 1. 显示已上传的音频预览
