@@ -47,14 +47,7 @@ st.title("🎵 Gemini 音频智能助手")
 st.markdown("通过 Google Gemini 多模态模型，轻松分析、理解您的音频内容。")
 st.divider() # 分割线，让布局更清晰
 
-# --- Google API Key 配置 ---
-# 优先从 Streamlit secrets 获取 API Key (推荐用于部署)
-# 其次尝试从环境变量获取 (用于本地开发测试)
-api_key = None
-if "GOOGLE_API_KEY" in st.secrets:
-    api_key = st.secrets["GOOGLE_API_KEY"]
-elif os.getenv("GOOGLE_API_KEY"):
-    api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GOOGLE_API_KEY") # <-- 直接从环境变量获取
 
 # API Key 提示与配置引导
 if not api_key:
