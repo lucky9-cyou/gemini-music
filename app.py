@@ -2,19 +2,20 @@ import streamlit as st
 import google.generativeai as genai
 from google.generativeai import protos # 导入 protos 模块，用于构建内嵌二进制数据
 import os
-import time # 用于模拟一些延迟或进度条，实际API调用不直接使用
+import pandas as pd # <-- 导入 pandas
+import io # <-- 导入 io，用于处理 BytesIO 内存文件流
 
 # --- Streamlit 页面配置 ---
 st.set_page_config(
-    page_title="🎵 Gemini 音频智能助手",
+    page_title="🎵 Gemini 音频智能助手 (批量)",
     page_icon="✨",
     layout="wide", # 使用宽布局，充分利用屏幕空间
     initial_sidebar_state="expanded" # 侧边栏默认展开
 )
 
 # --- 顶部标题和描述 ---
-st.markdown("<h1 style='text-align: center; color: #4CAF50;'>🎵 Gemini 音频智能助手 ✨</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: grey;'>利用 Google Gemini 多模态模型，深度分析和理解您的音频内容。</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #4CAF50;'>🎵 Gemini 音频智能助手 (批量) ✨</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: grey;'>利用 Google Gemini 多模态模型，批量分析您的音频内容并生成报告。</p>", unsafe_allow_html=True)
 st.divider() # 一条漂亮的分割线
 
 # --- Google API Key 配置 ---
@@ -27,7 +28,7 @@ if not api_key:
     st.info("""
     **配置方式：**
     - **部署到 Zeabur**: 在 Zeabur 控制台的环境变量中添加 `GOOGLE_API_KEY = "your_api_key_here"`
-    - **本地运行**: 在终端中设置环境变量 `export GOLE_API_KEY="your_api_key_here"`
+    - **本地运行**: 在终端中设置环境变量 `export GOOGLE_API_KEY="your_api_key_here"`
     """)
     st.stop() # 如果没有 API Key，停止应用运行
 
@@ -58,13 +59,20 @@ selected_model_id = model_options[selected_model_name]
 
 st.sidebar.divider() # 分割线
 
-# 音频文件上传
-st.sidebar.subheader("📤 上传音频文件")
-uploaded_file = st.sidebar.file_uploader(
-    "选择一个音频文件 (.mp3, .wav, .flac 等)",
+# 音频文件上传 (支持多文件)
+st.sidebar.subheader("📤 上传音频文件 (最多 50 个)")
+uploaded_files = st.sidebar.file_uploader(
+    "选择一个或多个音频文件 (.mp3, .wav, .flac 等)",
     type=["mp3", "wav", "flac", "ogg", "m4a"], # 支持常见音频格式
-    help="支持的音频格式包括 MP3、WAV、FLAC、OGG、M4A 等。请注意，直接内嵌音频到请求中通常适合**较短**的音频片段（建议文件大小在几MB以内，例如1-4分钟），过大文件可能导致请求失败或超时。"
+    accept_multiple_files=True, # <-- 允许上传多个文件
+    help="支持的音频格式包括 MP3、WAV、FLAC、OGG、M4A 等。请注意，直接内嵌音频到请求中通常适合**较短**的音频片段（建议文件大小在几MB以内，例如1-4分钟），过大文件可能导致请求失败或超时。单个批次最多支持 50 个文件。"
 )
+
+# 文件数量限制检查
+MAX_FILES = 50
+if uploaded_files and len(uploaded_files) > MAX_FILES:
+    st.sidebar.warning(f"⚠️ 您上传了 {len(uploaded_files)} 个文件，但最大支持 {MAX_FILES} 个。请移除多余文件。", icon="🚫")
+    uploaded_files = uploaded_files[:MAX_FILES] # 截断到最大数量
 
 st.sidebar.divider() # 分割线
 
@@ -79,116 +87,124 @@ user_prompt = st.sidebar.text_area(
 )
 
 st.sidebar.markdown("---") # 再一个分割线
-analyze_button = st.sidebar.button("🚀 开始分析音频", use_container_width=True) # 按钮填满侧边栏宽度
+analyze_button = st.sidebar.button("🚀 开始批量分析音频", use_container_width=True) # 按钮填满侧边栏宽度
 
 # --- 主内容区域 ---
-# 使用 st.container 和 st.expander 来组织输出，使界面更整洁
 main_output_container = st.container()
 
 with main_output_container:
-    # 占位符，用于动态显示状态信息（如上传中、分析中、成功、错误）
+    # 占位符，用于动态显示状态信息
     status_message_area = st.empty()
-    # Expander 用于折叠和展开音频预览区域
-    uploaded_audio_preview_expander = st.expander("▶️ 点击预览已上传音频", expanded=False)
-    # Expander 用于折叠和展开 Gemini 分析结果区域
-    analysis_result_expander = st.expander("✨ Gemini 分析结果", expanded=False)
+    # Expander 用于折叠和展开批处理概览
+    batch_summary_expander = st.expander("📊 批处理概览", expanded=False)
+    # Expander 用于折叠和展开 Gemini 分析结果
+    analysis_results_container = st.container() # 结果区域，不再是expander，直接显示，但内部可以有expander
 
 # --- 处理逻辑 ---
 if analyze_button:
-    if uploaded_file is None:
-        status_message_area.warning("⚠️ 请先上传一个音频文件！", icon="⬆️")
-        # 清除所有展开的区域，确保界面状态一致
-        uploaded_audio_preview_expander.empty()
-        analysis_result_expander.empty()
+    if not uploaded_files: # 检查是否有文件上传
+        status_message_area.warning("⚠️ 请先上传音频文件！", icon="⬆️")
+        batch_summary_expander.empty()
+        analysis_results_container.empty()
     else:
         # 清除之前的消息和结果，准备显示新的分析
         status_message_area.empty()
-        uploaded_audio_preview_expander.empty()
-        analysis_result_expander.empty()
+        batch_summary_expander.empty()
+        analysis_results_container.empty()
         
-        # 强制展开预览和结果区域，便于用户查看过程和最终结果
-        uploaded_audio_preview_expander.expanded = True
-        analysis_result_expander.expanded = True
+        # 强制展开概览区域
+        batch_summary_expander.expanded = True
 
-        status_message_area.info("⏳ 正在准备分析，请稍候...", icon="🔄")
+        status_message_area.info(f"⏳ 正在开始分析 {len(uploaded_files)} 个音频文件，请稍候...", icon="🔄")
+        
+        results = [] # 存储所有文件的分析结果
+        model = genai.GenerativeModel(selected_model_id) # 在循环外初始化模型，避免重复创建
 
-        # --- 调试信息开始 ---
-        # 这是一个临时的调试区域，用于在UI上显示文件上传的元数据
-        # 帮助诊断为什么3MB文件会失败
-        with st.sidebar.expander("🐛 调试信息 (仅供排查问题)", expanded=False):
-            st.write(f"上传文件名: `{uploaded_file.name}`")
-            st.write(f"文件大小: `{uploaded_file.size} bytes`")
-            st.write(f"MIME 类型: `{uploaded_file.type}`")
-            # 警告：不要打印uploaded_file.getvalue()，除非你清楚它的影响（大文件会阻塞UI）
-            if uploaded_file.size > 0:
-                st.text(f"文件内容前100字节（十六进制）：{uploaded_file.getvalue()[:100].hex()}")
-            else:
-                st.text("文件内容为空或无法读取前100字节")
-            st.markdown("---")
-        # --- 调试信息结束 ---
+        # --- 批处理进度条 ---
+        progress_bar = status_message_area.progress(0)
+        progress_text_placeholder = st.empty()
 
-        try:
-            # 1. 显示已上传的音频预览
-            with uploaded_audio_preview_expander: # 在 Expander 内部显示内容
-                st.subheader("已上传音频:")
-                st.audio(uploaded_file, format=uploaded_file.type, start_time=0)
-                # 使用两列布局显示文件信息，美观且节省空间
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown(f"**文件名称:** `{uploaded_file.name}`")
-                with col2:
-                    st.markdown(f"**文件大小:** `{round(uploaded_file.size / (1024 * 1024), 2)} MB`")
-                st.markdown("---") # 内部小分割线
+        for i, uploaded_file in enumerate(uploaded_files):
+            file_name = uploaded_file.name
+            file_size_mb = round(uploaded_file.size / (1024 * 1024), 2)
+            
+            progress_percentage = (i / len(uploaded_files))
+            progress_bar.progress(progress_percentage)
+            progress_text_placeholder.text(f"🚀 正在分析文件 {i+1}/{len(uploaded_files)}: `{file_name}` ({file_size_mb} MB)...")
 
+            current_file_result = {"文件名称": file_name, "文件大小 (MB)": file_size_mb}
+            
+            with analysis_results_container:
+                # 每个文件结果显示在一个独立的expander中，防止页面过长
+                with st.expander(f"文件 {i+1}: `{file_name}` 分析结果", expanded=False):
+                    st.audio(uploaded_file, format=uploaded_file.type, start_time=0, loop=False) # 提供音频预览
+                    st.markdown(f"**MIME 类型:** `{uploaded_file.type}`")
+                    st.markdown(f"**模型:** `{selected_model_name}`")
+                    st.markdown(f"**Prompt:** `{user_prompt}`")
+                    file_status_placeholder = st.empty() # 用于显示当前文件状态
+                    file_result_placeholder = st.empty() # 用于显示当前文件结果
 
-            # 2. 获取音频字节流并创建 protos.Part 对象，用于内嵌传输
-            with status_message_area.status("正在准备音频内容...", expanded=True) as status_box:
-                audio_bytes = uploaded_file.getvalue() # 获取上传文件的原始字节流
-                
-                # 使用 google.generativeai.protos 显式构建 Part 对象
-                # 这是将二进制数据（如音频）作为内联内容发送给 Gemini API 的正确方式
-                audio_part = protos.Part(
-                    inline_data=protos.Blob(
-                        data=audio_bytes,
-                        mime_type=uploaded_file.type # 使用 Streamlit 自动检测到的 MIME 类型
-                    )
-                )
-                status_box.update(label="音频内容已准备就绪！", state="complete", expanded=False)
+                    file_status_placeholder.info(f"开始分析 `{file_name}`...")
 
+                    try:
+                        audio_bytes = uploaded_file.getvalue()
+                        
+                        # 使用 google.generativeai.protos 显式构建 Part 对象
+                        audio_part = protos.Part(
+                            inline_data=protos.Blob(
+                                data=audio_bytes,
+                                mime_type=uploaded_file.type
+                            )
+                        )
+                        
+                        file_status_placeholder.info(f"正在向 Gemini 发送 `{file_name}` 请求...")
+                        
+                        response = model.generate_content(
+                            contents=[user_prompt, audio_part]
+                        )
+                        
+                        gemini_response_text = response.text
+                        file_status_placeholder.success(f"✅ `{file_name}` 分析成功！")
+                        file_result_placeholder.markdown(f"**Gemini 回复:**\n{gemini_response_text}")
+                        current_file_result["Gemini 回复"] = gemini_response_text
 
-            # 3. 调用 Gemini 模型生成内容
-            with status_message_area.status(f"正在使用 `{selected_model_name}` 模型分析内容...", expanded=True) as status_box:
-                model = genai.GenerativeModel(selected_model_id)
-                response = model.generate_content(
-                    contents=[user_prompt, audio_part] # 传入用户 Prompt 和构建好的音频 Part 对象
-                )
-                status_box.update(label="模型响应已获取！", state="complete", expanded=False)
+                    except genai.types.BlockedPromptException as e:
+                        error_msg = f"安全阻止：{e}"
+                        file_status_placeholder.error(f"⚠️ `{file_name}` 分析失败：{error_msg}")
+                        st.exception(e) # 显示详细异常
+                        current_file_result["Gemini 回复"] = f"分析失败 (安全阻止): {error_msg}"
+                    except Exception as e:
+                        error_msg = f"意外错误：{e}"
+                        file_status_placeholder.error(f"❌ `{file_name}` 分析失败：{error_msg}")
+                        st.exception(e) # 显示详细异常
+                        current_file_result["Gemini 回复"] = f"分析失败 (错误): {error_msg}"
+            
+            results.append(current_file_result)
 
+        # 批处理完成
+        progress_bar.progress(1.0)
+        progress_text_placeholder.success(f"🎉 所有 {len(uploaded_files)} 个文件分析完成！")
+        status_message_area.success("✅ 批处理完成！请查看下方概览和下载报告。", icon="🎉")
 
-            # 4. 显示模型回复
-            status_message_area.success("✅ 分析完成！请查看下方结果。", icon="🎉")
-            with analysis_result_expander: # 在 Expander 内部显示结果
-                st.markdown(f"### 🤖 Gemini 的详细分析结果 ({selected_model_name}):")
-                st.markdown(response.text) # 显示模型的文本回复
+        # 将结果转换为 DataFrame
+        df_results = pd.DataFrame(results)
 
+        with batch_summary_expander:
+            st.subheader("批处理概览")
+            st.dataframe(df_results, use_container_width=True) # 显示结果表格
 
-        except genai.types.BlockedPromptException as e:
-            # 捕获模型安全设置引发的异常
-            status_message_area.error(f"⚠️ 您的请求被模型安全设置阻止了。请尝试修改 Prompt 或音频内容。", icon="🚫")
-            st.exception(e) # 显示详细的异常信息，帮助调试
-            uploaded_audio_preview_expander.empty()
-            analysis_result_expander.empty()
-        except Exception as e:
-            # 捕获所有其他通用异常
-            status_message_area.error(f"❌ 分析过程中发生意外错误。", icon="⛔")
-            status_message_area.warning("💡 请检查您的 API Key 是否有效、网络连接是否正常，以及上传的音频文件是否有效且符合模型处理要求（例如，音频内容是否清晰可识别，文件大小是否过大，时长是否超过10分钟）。", icon="🔍")
-            st.exception(e) # 显示详细的异常信息，非常重要用于调试部署问题
-            uploaded_audio_preview_expander.empty()
-            analysis_result_expander.empty()
-        finally:
-            # 使用内嵌音频方式，无需清理 Google 服务上的临时文件，因此此 finally 块现在是空的
-            pass
+            # 提供 Excel 下载
+            excel_buffer = io.BytesIO()
+            df_results.to_excel(excel_buffer, index=False, engine='openpyxl')
+            excel_buffer.seek(0) # 将游标移到文件开头
 
+            st.download_button(
+                label="📥 下载分析报告 (Excel)",
+                data=excel_buffer,
+                file_name="gemini_audio_analysis_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="点击下载包含所有文件分析结果的Excel报告。"
+            )
 
 # --- 页脚 (可选) ---
 st.markdown("---")
