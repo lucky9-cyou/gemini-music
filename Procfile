@@ -1,1 +1,1 @@
-web: streamlit run app.py --server.port $PORT --server.enableCORS false --server.enableXsrfProtection false
+web: uvicorn app:demo --host 0.0.0.0 --port $PORT
